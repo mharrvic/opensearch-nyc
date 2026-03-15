@@ -12,6 +12,7 @@ The app is intentionally research-first rather than product-polished. It exposes
 ## Deep dive documentation
 
 - [Architecture, implementation, and platform comparison](docs/opensearch-research-sandbox.md)
+- [Relevance page guide](docs/relevance-page-guide.md)
 
 ## What is included
 
