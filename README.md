@@ -9,6 +9,10 @@ A local research workbench for learning OpenSearch against a real public dataset
 
 The app is intentionally research-first rather than product-polished. It exposes lexical, vector, and hybrid search, advanced filters, aggregations, raw DSL inspection, reindex controls, and a dedicated analytics view from one dashboard.
 
+## Deep dive documentation
+
+- [Architecture, implementation, and platform comparison](docs/opensearch-research-sandbox.md)
+
 ## What is included
 
 - Secure local OpenSearch with the Security plugin enabled
