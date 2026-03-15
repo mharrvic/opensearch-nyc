@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   useEffect,
   useState,
@@ -23,7 +24,7 @@ import {
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardAction,
@@ -391,6 +392,19 @@ export function SearchWorkbench({
                 and learn how filters, aggregations, pipelines, and embeddings
                 behave in one local workbench.
               </CardDescription>
+              <div className="flex flex-wrap gap-2">
+                <Link
+                  href="/analytics"
+                  className={`${buttonVariants({
+                    variant: "outline",
+                    size: "lg",
+                  })} w-fit bg-background/90`}
+                >
+                  <Telescope />
+                  Open analytics board
+                  <ArrowRight />
+                </Link>
+              </div>
               <div className="grid gap-4 pt-2 md:grid-cols-[minmax(0,1fr)_150px_170px_180px]">
                 <div className="space-y-2">
                   <Label htmlFor="query">Research query</Label>

@@ -152,6 +152,49 @@ export type SearchResponse = {
   debug?: SearchDebugPayload;
 };
 
+export type AnalyticsTimelinePoint = {
+  year: string;
+  totalProjects: number;
+  planned: number;
+  execution: number;
+  completed: number;
+  budgetTotal: number;
+  averageCompletion: number;
+};
+
+export type AnalyticsDebugPayload = {
+  request: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  notes: string[];
+};
+
+export type AnalyticsSnapshot = {
+  indexAlias: string;
+  indexReady: boolean;
+  generatedAt: string;
+  latencyMs: number;
+  totalProjects: number;
+  activeProjects: number;
+  completedProjects: number;
+  planningProjects: number;
+  executionProjects: number;
+  geoTaggedProjects: number;
+  missingForecastProjects: number;
+  averageCompletion: number;
+  budget: {
+    sum: number;
+    average: number;
+    median: number;
+    p90: number;
+    max: number;
+  };
+  phaseCounts: FacetBucket[];
+  boroughCounts: FacetBucket[];
+  fundingCounts: FacetBucket[];
+  forecastTimeline: AnalyticsTimelinePoint[];
+  debug: AnalyticsDebugPayload;
+};
+
 export type ClusterStatus = {
   connected: boolean;
   clusterName: string | null;
