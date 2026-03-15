@@ -1,6 +1,12 @@
 import { z } from "zod";
 
 export const searchModeSchema = z.enum(["lexical", "vector", "hybrid"]);
+export const searchConfigSchema = z.enum([
+  "lexical",
+  "vector",
+  "hybrid",
+  "hybrid_rrf",
+]);
 export const sortOptionSchema = z.enum([
   "relevance",
   "updated_desc",
@@ -27,6 +33,25 @@ export const geoFilterSchema = z.object({
   distanceKm: z.number().positive().max(500),
 });
 
+export const geoBoundsSchema = z
+  .object({
+    top: z.number().min(-90).max(90),
+    left: z.number().min(-180).max(180),
+    bottom: z.number().min(-90).max(90),
+    right: z.number().min(-180).max(180),
+  })
+  .refine((value) => value.top >= value.bottom, {
+    message: "The top latitude must be greater than or equal to the bottom latitude.",
+  });
+
+const sortCursorValueSchema = z.union([z.string(), z.number()]);
+
+export const searchCursorSchema = z.object({
+  pitId: z.string().min(1),
+  keepAlive: z.string().min(2).default("2m"),
+  sortValues: z.array(sortCursorValueSchema).min(1),
+});
+
 export const filterStateSchema = z.object({
   phases: z.array(z.string()).default([]),
   boroughs: z.array(z.string()).default([]),
@@ -36,11 +61,13 @@ export const filterStateSchema = z.object({
   updatedSince: z.string().nullable().optional(),
   hasCoordinates: z.boolean().optional(),
   geo: geoFilterSchema.optional(),
+  bbox: geoBoundsSchema.optional(),
 });
 
 export const searchRequestSchema = z.object({
   query: z.string().default(""),
   mode: searchModeSchema.default("lexical"),
+  searchConfig: searchConfigSchema.optional(),
   filters: filterStateSchema.default({
     phases: [],
     boroughs: [],
@@ -50,12 +77,46 @@ export const searchRequestSchema = z.object({
   page: z.number().int().min(1).default(1),
   pageSize: z.number().int().min(1).max(50).default(12),
   debug: z.boolean().default(false),
+  cursor: searchCursorSchema.optional(),
+});
+
+export const searchExportRequestSchema = searchRequestSchema.extend({
+  exportPageSize: z.number().int().min(1).max(200).default(100),
+  maxPages: z.number().int().min(1).max(25).default(5),
+  closeCursor: z.boolean().default(false),
 });
 
 export type SearchMode = z.infer<typeof searchModeSchema>;
+export type SearchConfigId = z.infer<typeof searchConfigSchema>;
 export type SortOption = z.infer<typeof sortOptionSchema>;
 export type FilterState = z.infer<typeof filterStateSchema>;
 export type SearchRequest = z.infer<typeof searchRequestSchema>;
+export type SearchCursor = z.infer<typeof searchCursorSchema>;
+export type SearchExportRequest = z.infer<typeof searchExportRequestSchema>;
+
+export type CompletionInput = {
+  input: string | string[];
+  weight?: number;
+};
+
+export type GeoBounds = {
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+};
+
+export type GeoPoint = {
+  lat: number;
+  lon: number;
+};
+
+export type GeoTileBucket = {
+  key: string;
+  count: number;
+  center: GeoPoint;
+  bounds: GeoBounds;
+};
 
 export type CapitalProjectDocument = {
   project_id: string;
@@ -99,6 +160,7 @@ export type CapitalProjectDocument = {
   source_dataset: string;
   raw_source: Record<string, unknown>;
   search_text: string;
+  project_suggest: CompletionInput[] | string[];
   project_embedding?: number[];
 };
 
@@ -129,6 +191,7 @@ export type SearchHit = {
   hasCoordinates: boolean;
   location: { lat: number; lon: number } | null;
   highlights: Record<string, string[]>;
+  sortValues?: Array<string | number>;
 };
 
 export type SearchDebugPayload = {
@@ -143,13 +206,51 @@ export type SearchResponse = {
   total: number;
   latencyMs: number;
   mode: SearchMode;
+  searchConfig: SearchConfigId;
   facets: {
     phases: FacetBucket[];
     boroughs: FacetBucket[];
     fundingSources: FacetBucket[];
     budgetBands: FacetBucket[];
   };
+  geo: {
+    bounds: GeoBounds | null;
+    tiles: GeoTileBucket[];
+  };
+  cursor?: SearchCursor | null;
   debug?: SearchDebugPayload;
+};
+
+export type SearchExportResponse = {
+  hits: SearchHit[];
+  total: number;
+  exportedCount: number;
+  latencyMs: number;
+  searchConfig: SearchConfigId;
+  cursor: SearchCursor | null;
+  done: boolean;
+};
+
+export type SuggestionOption = {
+  id: string;
+  text: string;
+  score: number | null;
+  title: string;
+  locationName: string | null;
+  phase: string;
+  source: "completion" | "correction";
+};
+
+export type SuggestResponse = {
+  query: string;
+  completion: SuggestionOption[];
+  corrections: string[];
+};
+
+export type SimilarProjectsResponse = {
+  source: "more_like_this" | "vector_fallback";
+  hits: SearchHit[];
+  latencyMs: number;
 };
 
 export type AnalyticsTimelinePoint = {
@@ -192,6 +293,10 @@ export type AnalyticsSnapshot = {
   boroughCounts: FacetBucket[];
   fundingCounts: FacetBucket[];
   forecastTimeline: AnalyticsTimelinePoint[];
+  geo: {
+    bounds: GeoBounds | null;
+    tiles: GeoTileBucket[];
+  };
   debug: AnalyticsDebugPayload;
 };
 
@@ -204,6 +309,7 @@ export type ClusterStatus = {
   indexReady: boolean;
   documentCount: number;
   searchPipelineReady: boolean;
+  rrfSearchPipelineReady: boolean;
   ingestPipelineReady: boolean;
   ollamaReachable: boolean;
   ollamaModel: string;

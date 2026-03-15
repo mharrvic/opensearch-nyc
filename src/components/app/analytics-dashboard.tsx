@@ -16,6 +16,7 @@ import {
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
 import { AnalyticsFilterBuilder } from "@/components/app/analytics-filter-builder";
+import { GeoGridMap } from "@/components/app/geo-grid-map";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -514,6 +515,24 @@ export function AnalyticsDashboard({
           icon={MapPinned}
         />
       </section>
+
+      <Card className="dashboard-panel border-border/80">
+        <CardHeader>
+          <CardTitle>Geo coverage map</CardTitle>
+          <CardDescription>
+            Geotile grid buckets from the analytics request. This is read-only
+            here and interactive in the search workbench.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <GeoGridMap
+            bounds={snapshot.geo.bounds}
+            tiles={snapshot.geo.tiles}
+            points={[]}
+            emptyMessage="No mapped projects are available for the current analytics filter set."
+          />
+        </CardContent>
+      </Card>
 
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_420px]">
         <Card className="dashboard-panel border-border/80">

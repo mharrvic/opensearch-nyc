@@ -4,6 +4,10 @@ import {
 } from "@/lib/analytics-filters";
 import { getServerEnv } from "@/lib/env";
 import { getOpenSearchClient } from "@/lib/opensearch/client";
+import {
+  parseGeoBounds,
+  parseGeoTileBuckets,
+} from "@/lib/opensearch/geo";
 import { getAliasIndices } from "@/lib/opensearch/schema";
 import type { AnalyticsSnapshot, FacetBucket } from "@/lib/types";
 
@@ -61,6 +65,13 @@ type AnalyticsResponseBody = {
     forecast_timeline?: {
       buckets?: TimelineBucket[];
     };
+    geo_bounds?: {
+      bounds?: {
+        top_left?: { lat?: number | null; lon?: number | null };
+        bottom_right?: { lat?: number | null; lon?: number | null };
+      };
+    };
+    geo_tiles?: TermsAggregation;
   };
 };
 
@@ -406,6 +417,18 @@ export function buildAnalyticsRequestBody(filters: AnalyticsFilter[] = []) {
           },
         },
       },
+      geo_bounds: {
+        geo_bounds: {
+          field: "location",
+          wrap_longitude: false,
+        },
+      },
+      geo_tiles: {
+        geotile_grid: {
+          field: "location",
+          precision: 7,
+        },
+      },
       forecast_timeline: {
         date_histogram: {
           field: "forecast_completion",
@@ -482,6 +505,10 @@ export function createEmptyAnalyticsSnapshot(
     boroughCounts: [],
     fundingCounts: [],
     forecastTimeline: [],
+    geo: {
+      bounds: null,
+      tiles: [],
+    },
     debug: {
       request: options.request ?? {},
       response: options.response,
@@ -559,6 +586,10 @@ function parseAnalyticsResponse(
     boroughCounts: buildFacetBuckets(aggregations?.borough_counts),
     fundingCounts: buildFacetBuckets(aggregations?.funding_counts),
     forecastTimeline: timeline,
+    geo: {
+      bounds: parseGeoBounds(aggregations?.geo_bounds),
+      tiles: parseGeoTileBuckets(aggregations?.geo_tiles),
+    },
     debug: {
       request: requestBody,
       response: responseBody as Record<string, unknown>,

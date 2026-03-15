@@ -31,6 +31,9 @@ const serverEnvSchema = z.object({
   OPENSEARCH_INDEX_ALIAS: z.string().default("capital-projects-current"),
   OPENSEARCH_REJECT_UNAUTHORIZED: booleanish.default(false),
   OPENSEARCH_SEARCH_PIPELINE: z.string().default("capital-projects-hybrid-pipeline"),
+  OPENSEARCH_RRF_SEARCH_PIPELINE: z
+    .string()
+    .default("capital-projects-hybrid-rrf-pipeline"),
   OPENSEARCH_INGEST_PIPELINE: z.string().default("capital-projects-normalize"),
   OLLAMA_BASE_URL: z.string().url().default("http://localhost:11434"),
   OLLAMA_EMBED_MODEL: z.string().default("qwen3-embedding:0.6b"),

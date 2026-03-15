@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import {
+  useDeferredValue,
   useEffect,
   useRef,
   useState,
@@ -12,6 +13,7 @@ import {
   ArrowRight,
   Bot,
   Database,
+  Download,
   ExternalLink,
   Filter,
   Layers3,
@@ -21,8 +23,10 @@ import {
   Server,
   Sparkles,
   Telescope,
+  WandSparkles,
 } from "lucide-react";
 
+import { GeoGridMap } from "@/components/app/geo-grid-map";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -75,14 +79,19 @@ import type {
   FacetBucket,
   FilterState,
   ReindexReport,
+  SearchConfigId,
+  SearchExportResponse,
   SearchRequest,
   SearchResponse,
+  SimilarProjectsResponse,
   SortOption,
+  SuggestResponse,
 } from "@/lib/types";
 
 const initialRequest: SearchRequest = {
   query: "",
   mode: "lexical",
+  searchConfig: "lexical",
   filters: {
     phases: [],
     boroughs: [],
@@ -96,11 +105,31 @@ const initialRequest: SearchRequest = {
   debug: true,
 };
 
-const modeOptions = [
+const searchConfigOptions: Array<{
+  value: SearchConfigId;
+  label: string;
+  hint: string;
+}> = [
   { value: "lexical", label: "Lexical", hint: "BM25 / keyword-heavy search" },
   { value: "vector", label: "Vector", hint: "Embedding-only similarity" },
-  { value: "hybrid", label: "Hybrid", hint: "BM25 + vector + normalization" },
+  {
+    value: "hybrid",
+    label: "Hybrid",
+    hint: "BM25 + vector + min-max normalization",
+  },
+  {
+    value: "hybrid_rrf",
+    label: "Hybrid RRF",
+    hint: "BM25 + vector + reciprocal rank fusion",
+  },
 ] as const;
+
+const searchConfigModeMap: Record<SearchConfigId, SearchRequest["mode"]> = {
+  lexical: "lexical",
+  vector: "vector",
+  hybrid: "hybrid",
+  hybrid_rrf: "hybrid",
+};
 
 const sortOptions: Array<{ value: SortOption; label: string }> = [
   { value: "relevance", label: "Relevance" },
@@ -146,6 +175,22 @@ function toggleFacet(values: string[], facet: string, checked: boolean) {
   }
 
   return Array.from(nextValues);
+}
+
+function areBoundsEqual(
+  left: FilterState["bbox"],
+  right: FilterState["bbox"],
+) {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    left.top === right.top &&
+    left.left === right.left &&
+    left.bottom === right.bottom &&
+    left.right === right.right
+  );
 }
 
 function JsonPanel({ data }: { data: unknown }) {
@@ -217,14 +262,25 @@ export function SearchWorkbench({
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [clusterStatus, setClusterStatus] = useState<ClusterStatus | null>(null);
   const [reindexReport, setReindexReport] = useState<ReindexReport | null>(null);
+  const [exportReport, setExportReport] = useState<SearchExportResponse | null>(null);
+  const [suggestions, setSuggestions] = useState<SuggestResponse>({
+    query: "",
+    completion: [],
+    corrections: [],
+  });
+  const [similarProjects, setSimilarProjects] =
+    useState<SimilarProjectsResponse | null>(null);
   const [selectedProject, setSelectedProject] =
     useState<CapitalProjectDocument | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [hasHydrated, setHasHydrated] = useState(false);
   const [isAutoSearchEnabled, setIsAutoSearchEnabled] = useState(true);
   const [isPending, startTransition] = useTransition();
+  const deferredQuery = useDeferredValue(request.query);
   const searchAbortControllerRef = useRef<AbortController | null>(null);
+  const suggestAbortControllerRef = useRef<AbortController | null>(null);
   const lastExecutedRequestKeyRef = useRef(buildRequestKey(initialRequest));
 
   async function loadClusterStatus() {
@@ -282,18 +338,67 @@ export function SearchWorkbench({
 
   async function loadProject(projectId: string) {
     setErrorMessage(null);
+    setSimilarProjects(null);
 
-    const apiResponse = await fetch(`/api/projects/${projectId}`, {
-      cache: "no-store",
-    });
-    const payload = await apiResponse.json();
+    const [projectResponse, similarResponse] = await Promise.all([
+      fetch(`/api/projects/${projectId}`, {
+        cache: "no-store",
+      }),
+      fetch(`/api/projects/${projectId}/similar`, {
+        cache: "no-store",
+      }),
+    ]);
+    const projectPayload = await projectResponse.json();
+    const similarPayload = await similarResponse.json();
 
-    if (!apiResponse.ok) {
-      throw new Error(extractErrorMessage(payload));
+    if (!projectResponse.ok) {
+      throw new Error(extractErrorMessage(projectPayload));
     }
 
-    setSelectedProject(payload as CapitalProjectDocument);
+    setSelectedProject(projectPayload as CapitalProjectDocument);
+    if (similarResponse.ok) {
+      setSimilarProjects(similarPayload as SimilarProjectsResponse);
+    }
     setDetailsOpen(true);
+  }
+
+  async function exportCurrentQuery() {
+    setErrorMessage(null);
+    setIsExporting(true);
+
+    try {
+      const apiResponse = await fetch("/api/search/export", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          ...request,
+          exportPageSize: 100,
+          maxPages: 10,
+        }),
+      });
+      const payload = await apiResponse.json();
+
+      if (!apiResponse.ok) {
+        throw new Error(extractErrorMessage(payload));
+      }
+
+      const exportPayload = payload as SearchExportResponse;
+      setExportReport(exportPayload);
+
+      const blob = new Blob([JSON.stringify(exportPayload.hits, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `capital-projects-export-${Date.now()}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setIsExporting(false);
+    }
   }
 
   async function triggerReindex() {
@@ -392,6 +497,52 @@ export function SearchWorkbench({
     };
   }, [hasHydrated, isAutoSearchEnabled, request, startTransition]);
 
+  useEffect(() => {
+    const trimmedQuery = deferredQuery.trim();
+    suggestAbortControllerRef.current?.abort();
+
+    if (trimmedQuery.length < 2) {
+      setSuggestions({
+        query: deferredQuery,
+        completion: [],
+        corrections: [],
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    suggestAbortControllerRef.current = controller;
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const apiResponse = await fetch(
+          `/api/suggest?q=${encodeURIComponent(trimmedQuery)}`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          },
+        );
+        const payload = await apiResponse.json();
+
+        if (!apiResponse.ok) {
+          throw new Error(extractErrorMessage(payload));
+        }
+
+        if (!controller.signal.aborted) {
+          setSuggestions(payload as SuggestResponse);
+        }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+      }
+    }, 140);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [deferredQuery]);
+
   const totalPages = response
     ? Math.max(1, Math.ceil(response.total / request.pageSize))
     : 1;
@@ -432,6 +583,50 @@ export function SearchWorkbench({
     }));
   }
 
+  function handleGeoChange(
+    key: "lat" | "lon" | "distanceKm",
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    const rawValue = event.target.value;
+
+    updateFilters((filters) => {
+      const nextGeo = {
+        lat: filters.geo?.lat ?? 40.74,
+        lon: filters.geo?.lon ?? -73.94,
+        distanceKm: filters.geo?.distanceKm ?? 8,
+        [key]: rawValue.length > 0 ? Number(rawValue) : undefined,
+      };
+
+      if (
+        typeof nextGeo.lat !== "number" ||
+        typeof nextGeo.lon !== "number" ||
+        typeof nextGeo.distanceKm !== "number"
+      ) {
+        return {
+          ...filters,
+          geo: undefined,
+        };
+      }
+
+      return {
+        ...filters,
+        geo: nextGeo,
+      };
+    });
+  }
+
+  const mapPoints =
+    response?.hits.map((hit) => ({
+      id: hit.id,
+      label: hit.title,
+      detail: hit.locationName,
+      location: hit.location,
+    })) ?? [];
+  const activeSearchConfig =
+    searchConfigOptions.find(
+      (option) => option.value === (response?.searchConfig ?? request.searchConfig),
+    )?.label ?? (response?.searchConfig ?? request.searchConfig ?? request.mode);
+
   return (
     <Sheet open={detailsOpen} onOpenChange={setDetailsOpen}>
       <main className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
@@ -471,8 +666,19 @@ export function SearchWorkbench({
                   Open analytics board
                   <ArrowRight />
                 </Link>
+                <Link
+                  href="/relevance"
+                  className={`${buttonVariants({
+                    variant: "outline",
+                    size: "lg",
+                  })} w-fit bg-background/90`}
+                >
+                  <WandSparkles />
+                  Open relevance lab
+                  <ArrowRight />
+                </Link>
               </div>
-              <div className="grid gap-4 pt-2 md:grid-cols-[minmax(0,1fr)_150px_170px_180px]">
+              <div className="grid gap-4 pt-2 md:grid-cols-[minmax(0,1fr)_190px_170px_180px]">
                 <div className="space-y-2">
                   <Label htmlFor="query">Research query</Label>
                   <Input
@@ -488,16 +694,43 @@ export function SearchWorkbench({
                     }
                     className="h-10 bg-background/90"
                   />
+                  {suggestions.completion.length > 0 || suggestions.corrections.length > 0 ? (
+                    <div className="rounded-[1.2rem] border border-border/70 bg-background/85 p-3">
+                      <div className="flex flex-wrap gap-2">
+                        {suggestions.completion.slice(0, 5).map((suggestion) => (
+                          <button
+                            key={`${suggestion.id}-${suggestion.text}`}
+                            className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-background px-3 py-1.5 text-sm text-foreground transition hover:border-primary/40 hover:bg-muted"
+                            onClick={() =>
+                              setRequest({
+                                ...request,
+                                page: 1,
+                                query: suggestion.text,
+                              })
+                            }
+                          >
+                            {suggestion.text}
+                          </button>
+                        ))}
+                      </div>
+                      {suggestions.corrections.length > 0 ? (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          Did you mean {suggestions.corrections.join(", ")}?
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
-                  <Label>Mode</Label>
+                  <Label>Search config</Label>
                   <Select
-                    value={request.mode}
+                    value={request.searchConfig ?? "lexical"}
                     onValueChange={(value) =>
                       setRequest({
                         ...request,
                         page: 1,
-                        mode: value as SearchRequest["mode"],
+                        searchConfig: value as SearchConfigId,
+                        mode: searchConfigModeMap[value as SearchConfigId],
                       })
                     }
                   >
@@ -505,13 +738,20 @@ export function SearchWorkbench({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {modeOptions.map((option) => (
+                      {searchConfigOptions.map((option) => (
                         <SelectItem key={option.value} value={option.value}>
                           {option.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {
+                      searchConfigOptions.find(
+                        (option) => option.value === (request.searchConfig ?? "lexical"),
+                      )?.hint
+                    }
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Sort</Label>
@@ -579,9 +819,9 @@ export function SearchWorkbench({
                 </span>
                 <span className="inline-flex items-center gap-2">
                   <Sparkles className="size-4" />
-                  Hybrid mode uses a search pipeline normalization stage.
+                  Hybrid configs use either normalization or RRF search pipelines.
                 </span>
-                {request.mode !== "lexical" && !request.query.trim() ? (
+                {request.searchConfig !== "lexical" && !request.query.trim() ? (
                   <span className="inline-flex items-center gap-2 text-chart-5">
                     <Bot className="size-4" />
                     Vector and hybrid modes fall back to lexical when the query
@@ -669,7 +909,12 @@ export function SearchWorkbench({
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Badge variant={clusterStatus?.searchPipelineReady ? "secondary" : "outline"}>
-                    search pipeline
+                    hybrid pipeline
+                  </Badge>
+                  <Badge
+                    variant={clusterStatus?.rrfSearchPipelineReady ? "secondary" : "outline"}
+                  >
+                    rrf pipeline
                   </Badge>
                   <Badge variant={clusterStatus?.ingestPipelineReady ? "secondary" : "outline"}>
                     ingest pipeline
@@ -856,6 +1101,45 @@ export function SearchWorkbench({
 
                 <Separator />
 
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                    Geo distance
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                    <div className="space-y-2">
+                      <Label htmlFor="geo-lat">Latitude</Label>
+                      <Input
+                        id="geo-lat"
+                        type="number"
+                        step="0.0001"
+                        value={request.filters.geo?.lat ?? ""}
+                        onChange={(event) => handleGeoChange("lat", event)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="geo-lon">Longitude</Label>
+                      <Input
+                        id="geo-lon"
+                        type="number"
+                        step="0.0001"
+                        value={request.filters.geo?.lon ?? ""}
+                        onChange={(event) => handleGeoChange("lon", event)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="geo-radius">Radius (km)</Label>
+                      <Input
+                        id="geo-radius"
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={request.filters.geo?.distanceKm ?? ""}
+                        onChange={(event) => handleGeoChange("distanceKm", event)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 <FacetGroup
                   label="Current phase"
                   buckets={response?.facets.phases ?? []}
@@ -894,6 +1178,18 @@ export function SearchWorkbench({
                   }
                 />
 
+                {request.filters.bbox ? (
+                  <div className="rounded-xl border border-chart-5/30 bg-chart-5/8 p-3 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">Map drill-down active</p>
+                    <p className="mt-1">
+                      Top {request.filters.bbox.top.toFixed(3)} · Left{" "}
+                      {request.filters.bbox.left.toFixed(3)} · Bottom{" "}
+                      {request.filters.bbox.bottom.toFixed(3)} · Right{" "}
+                      {request.filters.bbox.right.toFixed(3)}
+                    </p>
+                  </div>
+                ) : null}
+
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
@@ -917,7 +1213,9 @@ export function SearchWorkbench({
                       setRequest({
                         ...request,
                         page: 1,
-                        filters: initialRequest.filters,
+                        filters: {
+                          ...initialRequest.filters,
+                        },
                       });
                     }}
                   >
@@ -994,101 +1292,164 @@ export function SearchWorkbench({
                     </CardDescription>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant="secondary">
-                      {response?.mode ?? request.mode}
-                    </Badge>
+                    <Badge variant="secondary">{activeSearchConfig}</Badge>
                     <Badge variant="outline">{request.pageSize} / page</Badge>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        void exportCurrentQuery().catch((error) => {
+                          setErrorMessage(
+                            error instanceof Error ? error.message : "Export failed.",
+                          );
+                        });
+                      }}
+                      disabled={isExporting}
+                    >
+                      {isExporting ? (
+                        <LoaderCircle className="animate-spin" />
+                      ) : (
+                        <Download />
+                      )}
+                      Export
+                    </Button>
                   </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4 pt-4">
                 {response ? (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Project</TableHead>
-                        <TableHead>Phase</TableHead>
-                        <TableHead>Borough</TableHead>
-                        <TableHead>Funding</TableHead>
-                        <TableHead>Forecast</TableHead>
-                        <TableHead>Score</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {response.hits.length === 0 ? (
-                        <TableRow>
-                          <TableCell
-                            colSpan={6}
-                            className="py-10 text-center text-muted-foreground"
-                          >
-                            No results matched the current combination of query
-                            and filters.
-                          </TableCell>
-                        </TableRow>
-                      ) : null}
-                      {response.hits.map((hit) => {
-                        const firstHighlight =
-                          hit.highlights.title?.[0] ??
-                          hit.highlights.description?.[0] ??
-                          hit.highlights.search_text?.[0];
+                  <Tabs defaultValue="table">
+                    <TabsList variant="line" className="w-full justify-start">
+                      <TabsTrigger value="table">Table</TabsTrigger>
+                      <TabsTrigger value="map">Map</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="table" className="pt-4">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Project</TableHead>
+                            <TableHead>Phase</TableHead>
+                            <TableHead>Borough</TableHead>
+                            <TableHead>Funding</TableHead>
+                            <TableHead>Forecast</TableHead>
+                            <TableHead>Score</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {response.hits.length === 0 ? (
+                            <TableRow>
+                              <TableCell
+                                colSpan={6}
+                                className="py-10 text-center text-muted-foreground"
+                              >
+                                No results matched the current combination of
+                                query and filters.
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                          {response.hits.map((hit) => {
+                            const firstHighlight =
+                              hit.highlights.title?.[0] ??
+                              hit.highlights.description?.[0] ??
+                              hit.highlights.search_text?.[0];
 
-                        return (
-                          <TableRow
-                            key={hit.id}
-                            className="cursor-pointer align-top"
+                            return (
+                              <TableRow
+                                key={hit.id}
+                                className="cursor-pointer align-top"
+                                onClick={() =>
+                                  startTransition(() => {
+                                    void loadProject(hit.id);
+                                  })
+                                }
+                              >
+                                <TableCell className="min-w-[320px] space-y-2 whitespace-normal">
+                                  <div className="space-y-1">
+                                    <p className="font-medium text-foreground">
+                                      {hit.title}
+                                    </p>
+                                    <p className="text-sm text-muted-foreground">
+                                      {hit.locationName ?? "Location unavailable"}
+                                    </p>
+                                  </div>
+                                  <p className="text-sm leading-6 text-muted-foreground">
+                                    {hit.description}
+                                  </p>
+                                  {firstHighlight ? (
+                                    <div
+                                      className="rounded-lg border border-accent/35 bg-accent/15 px-3 py-2 text-sm leading-6 text-foreground/85 [&_em]:font-semibold [&_em]:text-primary"
+                                      dangerouslySetInnerHTML={{
+                                        __html: firstHighlight,
+                                      }}
+                                    />
+                                  ) : null}
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  <Badge variant="outline">{hit.phase}</Badge>
+                                </TableCell>
+                                <TableCell className="align-top whitespace-normal">
+                                  {hit.boroughs.length > 0
+                                    ? hit.boroughs.join(", ")
+                                    : "Unknown"}
+                                </TableCell>
+                                <TableCell className="align-top whitespace-normal">
+                                  {formatCurrencyRange(
+                                    hit.budgetMin,
+                                    hit.budgetMax,
+                                    hit.budgetBand,
+                                  )}
+                                </TableCell>
+                                <TableCell className="align-top">
+                                  {formatShortDate(hit.forecastCompletion)}
+                                </TableCell>
+                                <TableCell className="align-top font-mono text-xs text-muted-foreground">
+                                  {hit.score ? hit.score.toFixed(3) : "n/a"}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TabsContent>
+                    <TabsContent value="map" className="space-y-4 pt-4">
+                      <GeoGridMap
+                        bounds={response.geo.bounds}
+                        tiles={response.geo.tiles}
+                        points={mapPoints}
+                        activeBounds={request.filters.bbox}
+                        onTileSelect={(tile) =>
+                          updateFilters((filters) => ({
+                            ...filters,
+                            bbox: areBoundsEqual(filters.bbox, tile.bounds)
+                              ? undefined
+                              : tile.bounds,
+                          }))
+                        }
+                        emptyMessage="No geospatial coverage is available for the current result set."
+                      />
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+                        <p>
+                          Click a tile to turn it into a `geo_bounding_box`
+                          filter. The current table and facets will refresh
+                          against that drilled-down area.
+                        </p>
+                        {request.filters.bbox ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() =>
-                              startTransition(() => {
-                                void loadProject(hit.id);
-                              })
+                              updateFilters((filters) => ({
+                                ...filters,
+                                bbox: undefined,
+                              }))
                             }
                           >
-                            <TableCell className="min-w-[320px] space-y-2 whitespace-normal">
-                              <div className="space-y-1">
-                                <p className="font-medium text-foreground">
-                                  {hit.title}
-                                </p>
-                                <p className="text-sm text-muted-foreground">
-                                  {hit.locationName ?? "Location unavailable"}
-                                </p>
-                              </div>
-                              <p className="text-sm leading-6 text-muted-foreground">
-                                {hit.description}
-                              </p>
-                              {firstHighlight ? (
-                                <div
-                                  className="rounded-lg border border-accent/35 bg-accent/15 px-3 py-2 text-sm leading-6 text-foreground/85 [&_em]:font-semibold [&_em]:text-primary"
-                                  dangerouslySetInnerHTML={{
-                                    __html: firstHighlight,
-                                  }}
-                                />
-                              ) : null}
-                            </TableCell>
-                            <TableCell className="align-top">
-                              <Badge variant="outline">{hit.phase}</Badge>
-                            </TableCell>
-                            <TableCell className="align-top whitespace-normal">
-                              {hit.boroughs.length > 0
-                                ? hit.boroughs.join(", ")
-                                : "Unknown"}
-                            </TableCell>
-                            <TableCell className="align-top whitespace-normal">
-                              {formatCurrencyRange(
-                                hit.budgetMin,
-                                hit.budgetMax,
-                                hit.budgetBand,
-                              )}
-                            </TableCell>
-                            <TableCell className="align-top">
-                              {formatShortDate(hit.forecastCompletion)}
-                            </TableCell>
-                            <TableCell className="align-top font-mono text-xs text-muted-foreground">
-                              {hit.score ? hit.score.toFixed(3) : "n/a"}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
+                            Clear map filter
+                          </Button>
+                        ) : null}
+                      </div>
+                    </TabsContent>
+                  </Tabs>
                 ) : (
                   <div className="space-y-3">
                     <Skeleton className="h-14 w-full rounded-xl" />
@@ -1132,6 +1493,12 @@ export function SearchWorkbench({
                     </Button>
                   </div>
                 </div>
+                {exportReport ? (
+                  <div className="rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
+                    Exported {exportReport.exportedCount.toLocaleString()} documents
+                    from the current query in {exportReport.latencyMs}ms.
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 
@@ -1297,8 +1664,53 @@ export function SearchWorkbench({
                       tags: selectedProject.tags,
                       source_url: selectedProject.source_url,
                       search_text: selectedProject.search_text,
+                      project_suggest: selectedProject.project_suggest,
                     }}
                   />
+                </CardContent>
+              </Card>
+
+              <Card size="sm" className="border-border/80 bg-background/70">
+                <CardHeader>
+                  <CardTitle>Similar projects</CardTitle>
+                  <CardDescription>
+                    OpenSearch `more_like_this` results with dense-vector
+                    fallback when lexical similarity is sparse.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {similarProjects?.hits.length ? (
+                    <>
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Source: {similarProjects.source}
+                      </p>
+                      {similarProjects.hits.slice(0, 5).map((hit) => (
+                        <button
+                          key={hit.id}
+                          className="flex w-full items-start justify-between gap-3 rounded-xl border border-border/70 bg-background px-3 py-3 text-left transition hover:border-primary/35 hover:bg-muted/40"
+                          onClick={() =>
+                            startTransition(() => {
+                              void loadProject(hit.id);
+                            })
+                          }
+                        >
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium text-foreground">
+                              {hit.title}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {hit.locationName ?? "Location unavailable"}
+                            </p>
+                          </div>
+                          <Badge variant="outline">{hit.phase}</Badge>
+                        </button>
+                      ))}
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      No related projects were returned yet for this document.
+                    </p>
+                  )}
                 </CardContent>
               </Card>
 

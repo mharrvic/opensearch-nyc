@@ -1,11 +1,26 @@
 import { embedTexts } from "@/lib/ollama";
 import { getServerEnv } from "@/lib/env";
 import { getOpenSearchClient, isIndexMissingError } from "@/lib/opensearch/client";
+import {
+  parseGeoBounds,
+  parseGeoTileBuckets,
+  toOpenSearchBounds,
+} from "@/lib/opensearch/geo";
+import {
+  getSearchConfig,
+  resolveSearchConfigId,
+} from "@/lib/opensearch/search-config";
 import { getAliasIndices } from "@/lib/opensearch/schema";
 import type {
   CapitalProjectDocument,
   FacetBucket,
   FilterState,
+  SearchConfigId,
+  SearchCursor,
+  SearchExportRequest,
+  SearchExportResponse,
+  SearchHit,
+  SearchMode,
   SearchRequest,
   SearchResponse,
   SortOption,
@@ -18,27 +33,54 @@ type AggregationBucket = {
 
 type SearchResponseBody = {
   hits?: {
-    hits?: Array<{
-      _id: string;
-      _score?: number | string | null;
-      _source?: CapitalProjectDocument;
-      highlight?: Record<string, string[]>;
-    }>;
+    hits?: RawSearchHit[];
     total?: number | { value?: number };
   };
   took?: number;
-  aggregations?: Record<string, { buckets?: AggregationBucket[] }>;
+  aggregations?: Record<string, unknown>;
   profile?: Record<string, unknown>;
 };
 
+type RawSearchHit = {
+  _id: string;
+  _score?: number | string | null;
+  _source?: CapitalProjectDocument;
+  highlight?: Record<string, string[]>;
+  sort?: Array<string | number>;
+};
+
+type ExportCursorInput = {
+  pitId: string;
+  keepAlive: string;
+  sortValues?: Array<string | number>;
+};
+
+type SearchRequestBuildOptions = {
+  includeAggregations?: boolean;
+  includeHighlights?: boolean;
+  cursor?: ExportCursorInput;
+};
+
+type BuiltSearchRequestBody = Record<string, unknown> & {
+  effectiveMode: SearchMode;
+  searchConfig: SearchConfigId;
+  pipelineId?: string;
+};
+
 function buildFacetBuckets(
-  aggregations: Record<string, { buckets?: AggregationBucket[] }> | undefined,
+  aggregations: Record<string, unknown> | undefined,
   key: string,
 ): FacetBucket[] {
-  return aggregations?.[key]?.buckets?.map((bucket) => ({
-    value: String(bucket.key),
-    count: bucket.doc_count,
-  })) ?? [];
+  const aggregation = aggregations?.[key] as
+    | { buckets?: AggregationBucket[] }
+    | undefined;
+
+  return (
+    aggregation?.buckets?.map((bucket) => ({
+      value: String(bucket.key),
+      count: bucket.doc_count,
+    })) ?? []
+  );
 }
 
 function buildKeywordFilters(filters: FilterState) {
@@ -105,6 +147,14 @@ function buildKeywordFilters(filters: FilterState) {
           lat: filters.geo.lat,
           lon: filters.geo.lon,
         },
+      },
+    });
+  }
+
+  if (filters.bbox) {
+    queryFilters.push({
+      geo_bounding_box: {
+        location: toOpenSearchBounds(filters.bbox),
       },
     });
   }
@@ -185,7 +235,7 @@ function buildLexicalClause(query: string) {
             fields: [
               "title^5",
               "description^3",
-              "search_text^2",
+              "search_text^2.5",
               "location_name^2",
               "boroughs^1.5",
               "funding_sources^1.5",
@@ -237,34 +287,201 @@ function buildLexicalClause(query: string) {
 function buildSort(sort: SortOption) {
   switch (sort) {
     case "updated_desc":
-      return [{ last_updated: "desc" }];
+      return [{ last_updated: "desc" }, { project_id: "asc" }];
     case "updated_asc":
-      return [{ last_updated: "asc" }];
+      return [{ last_updated: "asc" }, { project_id: "asc" }];
     case "funding_desc":
-      return [{ budget_sort: "desc" }];
+      return [{ budget_sort: "desc" }, { project_id: "asc" }];
     case "funding_asc":
-      return [{ budget_sort: "asc" }];
+      return [{ budget_sort: "asc" }, { project_id: "asc" }];
     case "completion_asc":
-      return [{ forecast_completion: "asc" }];
+      return [{ forecast_completion: "asc" }, { project_id: "asc" }];
     case "completion_desc":
-      return [{ forecast_completion: "desc" }];
+      return [{ forecast_completion: "desc" }, { project_id: "asc" }];
     case "relevance":
     default:
-      return ["_score"];
+      return [{ _score: "desc" }, { project_id: "asc" }];
   }
+}
+
+function buildAggregations(filters: FilterState) {
+  return {
+    phases: {
+      terms: {
+        field: "phase",
+        size: 10,
+      },
+    },
+    boroughs: {
+      terms: {
+        field: "boroughs",
+        size: 10,
+      },
+    },
+    funding_sources: {
+      terms: {
+        field: "funding_sources",
+        size: 12,
+      },
+    },
+    budget_bands: {
+      terms: {
+        field: "budget_band",
+        size: 10,
+      },
+    },
+    geo_bounds: {
+      geo_bounds: {
+        field: "location",
+        wrap_longitude: false,
+      },
+    },
+    geo_tiles: {
+      geotile_grid: {
+        field: "location",
+        precision: 7,
+        ...(filters.bbox ? { bounds: toOpenSearchBounds(filters.bbox) } : {}),
+      },
+    },
+  };
+}
+
+export function mapSearchHit(hit: RawSearchHit): SearchHit {
+  const source = hit._source as CapitalProjectDocument;
+  const numericScore =
+    typeof hit._score === "number"
+      ? hit._score
+      : typeof hit._score === "string"
+        ? Number(hit._score)
+        : null;
+
+  return {
+    id: hit._id,
+    score: Number.isFinite(numericScore) ? numericScore : null,
+    title: source.title,
+    description: source.description,
+    phase: source.phase,
+    status: source.status,
+    boroughs: source.boroughs,
+    fundingSources: source.funding_sources,
+    budgetBand: source.budget_band,
+    budgetMin: source.budget_min,
+    budgetMax: source.budget_max,
+    forecastCompletion: source.forecast_completion,
+    lastUpdated: source.last_updated,
+    agency: source.agency,
+    locationName: source.location_name,
+    parkId: source.park_id,
+    projectLiaison: source.project_liaison,
+    overallPercentComplete: source.overall_percent_complete,
+    hasCoordinates: source.has_coordinates,
+    location: source.location,
+    highlights: hit.highlight ?? {},
+    sortValues: hit.sort,
+  };
+}
+
+function getTotalHits(responseBody: SearchResponseBody) {
+  return typeof responseBody.hits?.total === "number"
+    ? responseBody.hits.total
+    : responseBody.hits?.total?.value ?? 0;
+}
+
+function buildCursorFromHits(
+  pitId: string,
+  keepAlive: string,
+  hits: SearchHit[],
+): SearchCursor | null {
+  const lastSortValues = hits.at(-1)?.sortValues;
+
+  if (!lastSortValues || lastSortValues.length === 0) {
+    return null;
+  }
+
+  return {
+    pitId,
+    keepAlive,
+    sortValues: lastSortValues,
+  };
+}
+
+async function createPit(index: string, keepAlive: string) {
+  const client = getOpenSearchClient();
+  const response = await client.transport.request({
+    method: "POST",
+    path: `/${index}/_search/point_in_time`,
+    querystring: {
+      keep_alive: keepAlive,
+    },
+  });
+
+  return String((response.body as { pit_id?: string }).pit_id ?? "");
+}
+
+async function deletePit(pitId: string) {
+  const client = getOpenSearchClient();
+
+  if (!pitId) {
+    return;
+  }
+
+  await client.transport.request({
+    method: "DELETE",
+    path: "/_search/point_in_time",
+    body: {
+      pit_id: [pitId],
+    },
+  });
+}
+
+function createEmptySearchResponse(
+  requestedConfig: SearchConfigId,
+  requestedMode: SearchMode,
+  debug: boolean,
+  warning?: string,
+): SearchResponse {
+  return {
+    hits: [],
+    total: 0,
+    latencyMs: 0,
+    mode: requestedMode,
+    searchConfig: requestedConfig,
+    facets: {
+      phases: [],
+      boroughs: [],
+      fundingSources: [],
+      budgetBands: [],
+    },
+    geo: {
+      bounds: null,
+      tiles: [],
+    },
+    debug: debug
+      ? {
+          request: {},
+          warning,
+        }
+      : undefined,
+  };
 }
 
 export function buildSearchRequestBody(
   input: SearchRequest,
   queryVector?: number[],
-) {
-  const commonFilters = buildCommonFilters(input.filters);
+  options: SearchRequestBuildOptions = {},
+): BuiltSearchRequestBody {
+  const requestedConfigId = resolveSearchConfigId(input);
+  const requestedConfig = getSearchConfig(requestedConfigId);
   const lexicalClause = buildLexicalClause(input.query);
+  const commonFilters = buildCommonFilters(input.filters);
   const effectiveMode =
-    (input.mode === "vector" || input.mode === "hybrid") && !queryVector
+    requestedConfig.mode !== "lexical" && !queryVector
       ? "lexical"
-      : input.mode;
-  const supportsVerboseDebug = effectiveMode !== "hybrid";
+      : requestedConfig.mode;
+  const effectiveConfig =
+    effectiveMode === requestedConfig.mode
+      ? requestedConfig
+      : getSearchConfig("lexical");
   const paginationDepth = Math.max(input.page * input.pageSize * 3, 100);
 
   let query: Record<string, unknown>;
@@ -327,39 +544,33 @@ export function buildSearchRequestBody(
   }
 
   return {
-    from: (input.page - 1) * input.pageSize,
-    size: input.pageSize,
+    ...(options.cursor
+      ? {
+          size: input.pageSize,
+          pit: {
+            id: options.cursor.pitId,
+            keep_alive: options.cursor.keepAlive,
+          },
+          ...(options.cursor.sortValues
+            ? {
+                search_after: options.cursor.sortValues,
+              }
+            : {}),
+        }
+      : {
+          from: (input.page - 1) * input.pageSize,
+          size: input.pageSize,
+        }),
     track_total_hits: true,
     query,
     sort: buildSort(input.sort),
-    aggs: {
-      phases: {
-        terms: {
-          field: "phase",
-          size: 10,
-        },
-      },
-      boroughs: {
-        terms: {
-          field: "boroughs",
-          size: 10,
-        },
-      },
-      funding_sources: {
-        terms: {
-          field: "funding_sources",
-          size: 12,
-        },
-      },
-      budget_bands: {
-        terms: {
-          field: "budget_band",
-          size: 10,
-        },
-      },
-    },
+    ...(options.includeAggregations ?? true
+      ? {
+          aggs: buildAggregations(input.filters),
+        }
+      : {}),
     highlight:
-      input.query.trim().length > 0
+      (options.includeHighlights ?? true) && input.query.trim().length > 0
         ? {
             fields: {
               title: {},
@@ -368,50 +579,43 @@ export function buildSearchRequestBody(
             },
           }
         : undefined,
-    profile: input.debug && supportsVerboseDebug,
+    profile: input.debug && effectiveConfig.supportsVerboseDebug,
     explain:
-      input.debug && supportsVerboseDebug && effectiveMode !== "vector",
+      input.debug &&
+      effectiveConfig.supportsVerboseDebug &&
+      effectiveMode !== "vector",
     _source: true,
     effectiveMode,
+    searchConfig: effectiveConfig.id,
+    pipelineId: effectiveConfig.pipelineId,
   };
 }
 
 export async function executeSearch(input: SearchRequest): Promise<SearchResponse> {
   const env = getServerEnv();
   const client = getOpenSearchClient();
+  const requestedConfigId = resolveSearchConfigId(input);
   const aliasIndices = await getAliasIndices(client, env.OPENSEARCH_INDEX_ALIAS);
 
   if (aliasIndices.length === 0) {
-    return {
-      hits: [],
-      total: 0,
-      latencyMs: 0,
-      mode: input.mode,
-      facets: {
-        phases: [],
-        boroughs: [],
-        fundingSources: [],
-        budgetBands: [],
-      },
-      debug: input.debug
-        ? {
-            request: {},
-            warning:
-              "The current alias does not exist yet. Run the reindex action first.",
-          }
-        : undefined,
-    };
+    return createEmptySearchResponse(
+      requestedConfigId,
+      input.mode,
+      input.debug,
+      "The current alias does not exist yet. Run the reindex action first.",
+    );
   }
 
+  const requestedConfig = getSearchConfig(requestedConfigId);
   const queryVector =
-    input.mode === "lexical" || !input.query.trim()
+    requestedConfig.mode === "lexical" || !input.query.trim()
       ? undefined
       : (await embedTexts([input.query]))[0];
 
   const body = buildSearchRequestBody(input, queryVector);
-  const { effectiveMode, ...requestBody } = body;
+  const { effectiveMode, searchConfig, pipelineId, ...requestBody } = body;
   const hybridDebugWarning =
-    input.debug && effectiveMode === "hybrid"
+    input.debug && pipelineId
       ? "Hybrid debug mode omits profile and explain because OpenSearch 3.3.0 can throw an internal Neural Search null-pointer for those flags."
       : undefined;
 
@@ -419,66 +623,47 @@ export async function executeSearch(input: SearchRequest): Promise<SearchRespons
     const response = await client.search({
       index: env.OPENSEARCH_INDEX_ALIAS,
       body: requestBody as never,
-      ...(effectiveMode === "hybrid"
+      ...(pipelineId
         ? {
-            search_pipeline: env.OPENSEARCH_SEARCH_PIPELINE,
+            search_pipeline: pipelineId,
           }
         : {}),
     } as never);
     const responseBody = response.body as SearchResponseBody;
-
-    const hits = (responseBody.hits?.hits ?? []).map((hit) => {
-        const source = hit._source as CapitalProjectDocument;
-        const numericScore =
-          typeof hit._score === "number"
-            ? hit._score
-            : typeof hit._score === "string"
-              ? Number(hit._score)
-              : null;
-
-        return {
-          id: hit._id,
-          score: Number.isFinite(numericScore) ? numericScore : null,
-          title: source.title,
-          description: source.description,
-          phase: source.phase,
-          status: source.status,
-          boroughs: source.boroughs,
-          fundingSources: source.funding_sources,
-          budgetBand: source.budget_band,
-          budgetMin: source.budget_min,
-          budgetMax: source.budget_max,
-          forecastCompletion: source.forecast_completion,
-          lastUpdated: source.last_updated,
-          agency: source.agency,
-          locationName: source.location_name,
-          parkId: source.park_id,
-          projectLiaison: source.project_liaison,
-          overallPercentComplete: source.overall_percent_complete,
-          hasCoordinates: source.has_coordinates,
-          location: source.location,
-          highlights: hit.highlight ?? {},
-        };
-      });
+    const hits = (responseBody.hits?.hits ?? []).map(mapSearchHit);
+    const aggregations = responseBody.aggregations as Record<string, unknown> | undefined;
 
     return {
       hits,
-      total:
-        typeof responseBody.hits?.total === "number"
-          ? responseBody.hits.total
-          : responseBody.hits?.total?.value ?? 0,
+      total: getTotalHits(responseBody),
       latencyMs: responseBody.took ?? 0,
       mode: effectiveMode,
+      searchConfig,
       facets: {
-        phases: buildFacetBuckets(responseBody.aggregations, "phases"),
-        boroughs: buildFacetBuckets(responseBody.aggregations, "boroughs"),
-        fundingSources: buildFacetBuckets(responseBody.aggregations, "funding_sources"),
-        budgetBands: buildFacetBuckets(responseBody.aggregations, "budget_bands"),
+        phases: buildFacetBuckets(aggregations, "phases"),
+        boroughs: buildFacetBuckets(aggregations, "boroughs"),
+        fundingSources: buildFacetBuckets(aggregations, "funding_sources"),
+        budgetBands: buildFacetBuckets(aggregations, "budget_bands"),
+      },
+      geo: {
+        bounds: parseGeoBounds(
+          aggregations?.geo_bounds as
+            | {
+                bounds?: {
+                  top_left?: { lat?: number | null; lon?: number | null };
+                  bottom_right?: { lat?: number | null; lon?: number | null };
+                };
+              }
+            | undefined,
+        ),
+        tiles: parseGeoTileBuckets(
+          aggregations?.geo_tiles as { buckets?: AggregationBucket[] } | undefined,
+        ),
       },
       debug: input.debug
         ? {
             request: requestBody as Record<string, unknown>,
-            response: responseBody,
+            response: responseBody as Record<string, unknown>,
             profile:
               typeof responseBody.profile === "object"
                 ? (responseBody.profile as Record<string, unknown>)
@@ -489,29 +674,124 @@ export async function executeSearch(input: SearchRequest): Promise<SearchRespons
     };
   } catch (error) {
     if (isIndexMissingError(error)) {
-      return {
-        hits: [],
-        total: 0,
-        latencyMs: 0,
-        mode: input.mode,
-        facets: {
-          phases: [],
-          boroughs: [],
-          fundingSources: [],
-          budgetBands: [],
-        },
-        debug: input.debug
-          ? {
-              request: requestBody as Record<string, unknown>,
-              warning:
-                "The alias points to a missing index. Re-run the reindex workflow.",
-            }
-          : undefined,
-      };
+      return createEmptySearchResponse(
+        requestedConfigId,
+        input.mode,
+        input.debug,
+        "The alias points to a missing index. Re-run the reindex workflow.",
+      );
     }
 
     throw error;
   }
+}
+
+export async function executeSearchExport(
+  input: SearchExportRequest,
+): Promise<SearchExportResponse> {
+  const env = getServerEnv();
+  const client = getOpenSearchClient();
+  const requestedConfigId = resolveSearchConfigId(input);
+  const aliasIndices = await getAliasIndices(client, env.OPENSEARCH_INDEX_ALIAS);
+
+  if (aliasIndices.length === 0) {
+    return {
+      hits: [],
+      total: 0,
+      exportedCount: 0,
+      latencyMs: 0,
+      searchConfig: requestedConfigId,
+      cursor: null,
+      done: true,
+    };
+  }
+
+  const requestedConfig = getSearchConfig(requestedConfigId);
+  const queryVector =
+    requestedConfig.mode === "lexical" || !input.query.trim()
+      ? undefined
+      : (await embedTexts([input.query]))[0];
+
+  let pitId = input.cursor?.pitId;
+  const keepAlive = input.cursor?.keepAlive ?? "2m";
+  let searchAfter = input.cursor?.sortValues;
+  let total = 0;
+  let latencyMs = 0;
+  const hits: SearchHit[] = [];
+  let done = false;
+
+  if (!pitId) {
+    pitId = await createPit(env.OPENSEARCH_INDEX_ALIAS, keepAlive);
+  }
+
+  for (let pageIndex = 0; pageIndex < input.maxPages; pageIndex += 1) {
+    const body = buildSearchRequestBody(
+      {
+        ...input,
+        page: 1,
+        pageSize: input.exportPageSize,
+      },
+      queryVector,
+      {
+        includeAggregations: false,
+        includeHighlights: false,
+        cursor: {
+          pitId,
+          keepAlive,
+          sortValues: searchAfter,
+        },
+      },
+    );
+    const { pipelineId, ...requestBody } = body;
+    const response = await client.search({
+      body: requestBody as never,
+      ...(pipelineId
+        ? {
+            search_pipeline: pipelineId,
+          }
+        : {}),
+    } as never);
+    const responseBody = response.body as SearchResponseBody;
+    const pageHits = (responseBody.hits?.hits ?? []).map(mapSearchHit);
+
+    total = getTotalHits(responseBody);
+    latencyMs += responseBody.took ?? 0;
+    hits.push(...pageHits);
+
+    if (
+      pageHits.length < input.exportPageSize ||
+      hits.length >= total ||
+      !pageHits.at(-1)?.sortValues
+    ) {
+      done = true;
+      break;
+    }
+
+    searchAfter = pageHits.at(-1)?.sortValues;
+  }
+
+  const cursor =
+    done || input.closeCursor || !pitId
+      ? null
+      : buildCursorFromHits(pitId, keepAlive, hits);
+
+  if ((done || input.closeCursor) && pitId) {
+    try {
+      await deletePit(pitId);
+    } catch {
+      // PIT cleanup failure should not fail the export payload.
+    }
+  }
+
+  return {
+    hits,
+    total,
+    exportedCount: hits.length,
+    latencyMs,
+    searchConfig: resolveSearchConfigId(input),
+    cursor,
+    done: done || cursor === null,
+  };
 }
 
 export async function getProjectById(projectId: string) {
@@ -530,6 +810,8 @@ export async function getProjectById(projectId: string) {
     },
   });
 
-  const hit = response.body.hits?.hits?.[0]?._source as CapitalProjectDocument | undefined;
+  const hit = response.body.hits?.hits?.[0]?._source as
+    | CapitalProjectDocument
+    | undefined;
   return hit ?? null;
 }

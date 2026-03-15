@@ -201,7 +201,9 @@ function buildForecastCompletion(row: NYCParksCapitalProjectRow, phase: string) 
   return upcomingMilestones.find(Boolean) ?? null;
 }
 
-function buildSearchText(project: Omit<CapitalProjectDocument, "search_text">) {
+function buildSearchText(
+  project: Omit<CapitalProjectDocument, "search_text" | "project_suggest">,
+) {
   return dedupe([
     project.title,
     project.description,
@@ -221,6 +223,23 @@ function buildSearchText(project: Omit<CapitalProjectDocument, "search_text">) {
     .trim();
 }
 
+function buildSuggestionInputs(
+  project: Omit<CapitalProjectDocument, "search_text" | "project_suggest">,
+) {
+  const suggestions = dedupe([
+    project.title,
+    project.location_name ?? "",
+    `${project.title} ${project.boroughs[0] ?? ""}`.trim(),
+    `${project.location_name ?? ""} ${project.boroughs[0] ?? ""}`.trim(),
+    project.park_id ?? "",
+  ]);
+
+  return suggestions.map((input, index) => ({
+    input,
+    weight: Math.max(1, 12 - index * 2),
+  }));
+}
+
 export function normalizeCapitalProject(
   row: NYCParksCapitalProjectRow,
 ): CapitalProjectDocument {
@@ -234,7 +253,10 @@ export function normalizeCapitalProject(
     cleanText(row.fundingsource),
     KNOWN_FUNDING_SOURCES,
   );
-  const baseDocument: Omit<CapitalProjectDocument, "search_text"> = {
+  const baseDocument: Omit<
+    CapitalProjectDocument,
+    "search_text" | "project_suggest"
+  > = {
     project_id: row.trackerid,
     fms_id: cleanText(row.fmsid),
     title: cleanText(row.title) ?? `Capital Project ${row.trackerid}`,
@@ -296,6 +318,7 @@ export function normalizeCapitalProject(
   return {
     ...baseDocument,
     search_text: buildSearchText(baseDocument),
+    project_suggest: buildSuggestionInputs(baseDocument),
   };
 }
 

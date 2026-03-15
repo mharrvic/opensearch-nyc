@@ -21,12 +21,19 @@ export async function GET() {
 
   try {
     const client = getOpenSearchClient();
-    const [info, health, aliasIndices, searchPipelineReady, ingestPipelineReady] =
-      await Promise.all([
+    const [
+      info,
+      health,
+      aliasIndices,
+      searchPipelineReady,
+      rrfSearchPipelineReady,
+      ingestPipelineReady,
+    ] = await Promise.all([
         client.info(),
         client.cluster.health(),
         getAliasIndices(client, env.OPENSEARCH_INDEX_ALIAS),
         hasSearchPipeline(client, env.OPENSEARCH_SEARCH_PIPELINE),
+        hasSearchPipeline(client, env.OPENSEARCH_RRF_SEARCH_PIPELINE),
         hasIngestPipeline(client, env.OPENSEARCH_INGEST_PIPELINE),
       ]);
 
@@ -44,6 +51,7 @@ export async function GET() {
       indexReady: aliasIndices.length > 0,
       documentCount,
       searchPipelineReady,
+      rrfSearchPipelineReady,
       ingestPipelineReady,
       ollamaReachable: ollama.reachable,
       ollamaModel: env.OLLAMA_EMBED_MODEL,
@@ -60,6 +68,7 @@ export async function GET() {
       indexReady: false,
       documentCount: 0,
       searchPipelineReady: false,
+      rrfSearchPipelineReady: false,
       ingestPipelineReady: false,
       ollamaReachable: ollama.reachable,
       ollamaModel: env.OLLAMA_EMBED_MODEL,

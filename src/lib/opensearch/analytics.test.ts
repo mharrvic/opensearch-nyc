@@ -36,6 +36,17 @@ describe("analytics request builder", () => {
             calendar_interval: "year",
           },
         },
+        geo_bounds: {
+          geo_bounds: {
+            field: "location",
+          },
+        },
+        geo_tiles: {
+          geotile_grid: {
+            field: "location",
+            precision: 7,
+          },
+        },
       },
     });
   });
@@ -168,6 +179,8 @@ describe("analytics request builder", () => {
 
     expect(snapshot.indexReady).toBe(false);
     expect(snapshot.totalProjects).toBe(0);
+    expect(snapshot.geo.bounds).toBeNull();
+    expect(snapshot.geo.tiles).toEqual([]);
     expect(snapshot.debug.notes).toContain("Run the seed workflow first.");
   });
 });

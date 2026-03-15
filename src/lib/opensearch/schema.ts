@@ -27,16 +27,60 @@ function buildIndexBody(embeddingDimensions: number) {
             filter: ["lowercase", "asciifolding"],
           },
         },
+        filter: {
+          project_synonyms: {
+            type: "synonym_graph",
+            synonyms: [
+              "playground, play area",
+              "waterfront, shoreline, seawall",
+              "restroom, bathroom, comfort station",
+              "reconstruction, renovation, rebuild",
+              "resiliency, resilience, flood protection",
+              "greenway, esplanade, promenade",
+              "spray shower, splash pad, sprinkler",
+            ],
+          },
+          english_stop: {
+            type: "stop",
+            stopwords: "_english_",
+          },
+          english_stemmer: {
+            type: "stemmer",
+            language: "english",
+          },
+          english_possessive_stemmer: {
+            type: "stemmer",
+            language: "possessive_english",
+          },
+        },
+        analyzer: {
+          english_synonym_search: {
+            tokenizer: "standard",
+            filter: [
+              "lowercase",
+              "english_possessive_stemmer",
+              "project_synonyms",
+              "english_stop",
+              "english_stemmer",
+            ],
+          },
+          suggest_index: {
+            tokenizer: "standard",
+            filter: ["lowercase", "asciifolding"],
+          },
+        },
       },
     },
     mappings: {
-      dynamic: "false",
+      dynamic: false,
       properties: {
         project_id: { type: "keyword" },
         fms_id: { type: "keyword" },
         title: {
           type: "text",
           analyzer: "english",
+          search_analyzer: "english_synonym_search",
+          term_vector: "with_positions_offsets",
           fields: {
             keyword: { type: "keyword", normalizer: "facet_normalizer" },
             autocomplete: {
@@ -46,7 +90,12 @@ function buildIndexBody(embeddingDimensions: number) {
             },
           },
         },
-        description: { type: "text", analyzer: "english" },
+        description: {
+          type: "text",
+          analyzer: "english",
+          search_analyzer: "english_synonym_search",
+          term_vector: "with_positions_offsets",
+        },
         agency: { type: "keyword", normalizer: "facet_normalizer" },
         phase: { type: "keyword", normalizer: "facet_normalizer" },
         status: { type: "keyword", normalizer: "facet_normalizer" },
@@ -63,6 +112,8 @@ function buildIndexBody(embeddingDimensions: number) {
         location_name: {
           type: "text",
           analyzer: "english",
+          search_analyzer: "english_synonym_search",
+          term_vector: "with_positions_offsets",
           fields: {
             keyword: { type: "keyword", normalizer: "facet_normalizer" },
             autocomplete: {
@@ -99,6 +150,8 @@ function buildIndexBody(embeddingDimensions: number) {
         search_text: {
           type: "text",
           analyzer: "english",
+          search_analyzer: "english_synonym_search",
+          term_vector: "with_positions_offsets",
           fields: {
             autocomplete: {
               type: "search_as_you_type",
@@ -106,6 +159,12 @@ function buildIndexBody(embeddingDimensions: number) {
               max_shingle_size: 3,
             },
           },
+        },
+        project_suggest: {
+          type: "completion",
+          analyzer: "suggest_index",
+          search_analyzer: "suggest_index",
+          preserve_position_increments: false,
         },
         project_embedding: {
           type: "knn_vector",
@@ -170,6 +229,7 @@ export async function ensurePipelines(client: Client) {
   await client.searchPipeline.put({
     id: env.OPENSEARCH_SEARCH_PIPELINE,
     body: {
+      description: "Post processor for normalized hybrid search.",
       phase_results_processors: [
         {
           "normalization-processor": {
@@ -180,6 +240,26 @@ export async function ensurePipelines(client: Client) {
               technique: "arithmetic_mean",
               parameters: {
                 weights: [0.45, 0.55],
+              },
+            },
+          },
+        },
+      ],
+    } as never,
+  });
+
+  await client.searchPipeline.put({
+    id: env.OPENSEARCH_RRF_SEARCH_PIPELINE,
+    body: {
+      description: "Post processor for hybrid RRF search.",
+      phase_results_processors: [
+        {
+          "score-ranker-processor": {
+            combination: {
+              technique: "rrf",
+              rank_constant: 40,
+              parameters: {
+                weights: [0.55, 0.45],
               },
             },
           },
