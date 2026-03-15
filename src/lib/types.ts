@@ -324,3 +324,55 @@ export type ReindexReport = {
   embeddingDimensions: number;
   durationMs: number;
 };
+
+export const relevanceRatingSchema = z.object({
+  _id: z.string().min(1),
+  rating: z.number().int().min(0).max(3),
+});
+
+export const relevanceFixtureSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  query: z.string().min(1),
+  ratings: z.array(relevanceRatingSchema).min(1),
+});
+
+export const relevanceFixtureModeSchema = z.enum([
+  "default",
+  "custom",
+  "combined",
+]);
+
+export const relevanceEvalRequestSchema = z.object({
+  fixtureMode: relevanceFixtureModeSchema.default("default"),
+  fixtures: z.array(relevanceFixtureSchema).default([]),
+});
+
+export type RelevanceFixtureMode = z.infer<typeof relevanceFixtureModeSchema>;
+export type RelevanceFixture = z.infer<typeof relevanceFixtureSchema>;
+export type RelevanceEvalRequest = z.infer<typeof relevanceEvalRequestSchema>;
+
+export type RelevanceRun = {
+  id: SearchConfigId;
+  label: string;
+  metricScore: number | null;
+  queryScores: Array<{
+    id: string;
+    label: string;
+    metricScore: number | null;
+    ratings: number;
+    failure?: string;
+  }>;
+  raw?: Record<string, unknown>;
+  error?: string;
+};
+
+export type RelevanceEvalResponse = {
+  generatedAt: string;
+  indexAlias: string;
+  fixtureMode: RelevanceFixtureMode;
+  defaultFixtureCount: number;
+  customFixtureCount: number;
+  runs: RelevanceRun[];
+  fixtures: RelevanceFixture[];
+};
