@@ -28,6 +28,17 @@ const baseRequest: SearchRequest = {
 describe("search request builder", () => {
   it("builds a lexical query with filters and debug flags", () => {
     const body = buildSearchRequestBody(baseRequest);
+    const lexicalShouldClauses = (
+      body.query as {
+        bool?: {
+          must?: Array<{
+            bool?: {
+              should?: Array<Record<string, unknown>>;
+            };
+          }>;
+        };
+      }
+    ).bool?.must?.[0]?.bool?.should;
 
     expect(body.effectiveMode).toBe("lexical");
     expect(body.query).toMatchObject({
@@ -39,6 +50,19 @@ describe("search request builder", () => {
         ]),
       },
     });
+    expect(lexicalShouldClauses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          multi_match: expect.objectContaining({
+            type: "bool_prefix",
+            fields: expect.arrayContaining([
+              "title.autocomplete^6",
+              "search_text.autocomplete^2.5",
+            ]),
+          }),
+        }),
+      ]),
+    );
     expect(body.profile).toBe(true);
     expect(body.highlight).toBeDefined();
   });

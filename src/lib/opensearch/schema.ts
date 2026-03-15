@@ -39,6 +39,11 @@ function buildIndexBody(embeddingDimensions: number) {
           analyzer: "english",
           fields: {
             keyword: { type: "keyword", normalizer: "facet_normalizer" },
+            autocomplete: {
+              type: "search_as_you_type",
+              analyzer: "standard",
+              max_shingle_size: 3,
+            },
           },
         },
         description: { type: "text", analyzer: "english" },
@@ -60,6 +65,11 @@ function buildIndexBody(embeddingDimensions: number) {
           analyzer: "english",
           fields: {
             keyword: { type: "keyword", normalizer: "facet_normalizer" },
+            autocomplete: {
+              type: "search_as_you_type",
+              analyzer: "standard",
+              max_shingle_size: 3,
+            },
           },
         },
         park_id: { type: "keyword" },
@@ -86,7 +96,17 @@ function buildIndexBody(embeddingDimensions: number) {
         tags: { type: "keyword", normalizer: "facet_normalizer" },
         source_url: { type: "keyword" },
         source_dataset: { type: "keyword" },
-        search_text: { type: "text", analyzer: "english" },
+        search_text: {
+          type: "text",
+          analyzer: "english",
+          fields: {
+            autocomplete: {
+              type: "search_as_you_type",
+              analyzer: "standard",
+              max_shingle_size: 3,
+            },
+          },
+        },
         project_embedding: {
           type: "knn_vector",
           dimension: embeddingDimensions,

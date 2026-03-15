@@ -177,19 +177,59 @@ function buildLexicalClause(query: string) {
   }
 
   return {
-    multi_match: {
-      query,
-      fields: [
-        "title^5",
-        "description^3",
-        "search_text^2",
-        "location_name^2",
-        "boroughs^1.5",
-        "funding_sources^1.5",
-        "budget_band",
+    bool: {
+      should: [
+        {
+          multi_match: {
+            query,
+            fields: [
+              "title^5",
+              "description^3",
+              "search_text^2",
+              "location_name^2",
+              "boroughs^1.5",
+              "funding_sources^1.5",
+              "budget_band",
+            ],
+            type: "best_fields",
+            fuzziness: "AUTO",
+          },
+        },
+        {
+          multi_match: {
+            query,
+            type: "bool_prefix",
+            fields: [
+              "title.autocomplete^6",
+              "title.autocomplete._2gram^5",
+              "title.autocomplete._3gram^4",
+              "location_name.autocomplete^3",
+              "location_name.autocomplete._2gram^2.5",
+              "location_name.autocomplete._3gram^2",
+              "search_text.autocomplete^2.5",
+              "search_text.autocomplete._2gram^2",
+              "search_text.autocomplete._3gram^1.5",
+            ],
+          },
+        },
+        {
+          match_phrase_prefix: {
+            title: {
+              query,
+              boost: 4,
+            },
+          },
+        },
+        {
+          match_phrase_prefix: {
+            location_name: {
+              query,
+              boost: 2,
+            },
+          },
+        },
       ],
-      type: "best_fields",
-      fuzziness: "AUTO",
+      minimum_should_match: 1,
     },
   };
 }
