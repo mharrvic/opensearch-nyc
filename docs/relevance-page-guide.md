@@ -35,20 +35,59 @@ The page has four main parts:
 
 A fixture is a small test case for search relevance.
 
+The easiest way to think about it is:
+
+- a fixture is one search scenario
+- the query is what a person would type
+- the judged documents are the results you expect to be good answers
+- the ratings tell the page which expected results are strongest
+
 Each fixture contains:
 
 - a label
 - a query string
-- a list of project ids that are considered relevant
-- a relevance rating for each judged project
+- a list of expected result documents
+- a relevance rating for each expected result
 
 Example:
 
 - Label: `Queens playground reconstruction`
 - Query: `queens playground reconstruction`
-- Judged docs: a few known project ids with ratings such as `3`, `2`, or `1`
+- Expected results:
+  - project `1023`, rating `3`
+  - project `1022`, rating `2`
+  - project `1004111`, rating `1`
 
-The goal is to see whether the search engine places those judged documents near the top.
+The goal is to see whether the search engine places those expected results near the top.
+
+### What do "judged documents" and ratings mean?
+
+The page uses information retrieval terminology, which can sound more technical than it really is.
+
+Here is the plain-language version:
+
+- `Document` means one indexed search result in OpenSearch
+- in this project, a document is one capital-project record
+- `Judged` means a human decided how relevant that document is for the query
+
+So when the page says `judged documents`, it really means:
+
+- "these are the project records we expect to see for this query"
+
+The rating is just match strength:
+
+- `3` = best match
+- `2` = good match
+- `1` = weak but still relevant
+- `0` = reviewed, but not actually relevant
+
+You can think of a custom fixture as an answer key:
+
+- "When someone searches this query..."
+- "...these project ids should be considered the expected good results..."
+- "...and this one is the best result, this one is decent, this one is only loosely related."
+
+If the search engine ranks the high-rated documents near the top, the fixture gets a better score.
 
 ### What does NDCG@10 mean?
 
@@ -167,15 +206,24 @@ For a custom fixture to be usable in scoring, it needs:
 
 - a fixture label
 - a search query
-- at least one judged project id
-- a rating for each judged project id
+- at least one expected result project id
+- a rating for each expected result project id
 
 The rating scale is:
 
-- `3`: strongly relevant
-- `2`: clearly relevant
-- `1`: somewhat relevant
-- `0`: judged but not relevant
+- `3`: best match
+- `2`: good match
+- `1`: weak match
+- `0`: reviewed but not relevant
+
+If you are unsure how to start, use this pattern:
+
+- pick one query you care about
+- identify 1 to 3 project ids that should show up for that query
+- assign `3` to the best one
+- assign `2` or `1` to the less-perfect ones
+
+That is enough to make the fixture useful.
 
 If a custom fixture is incomplete, it is treated as a draft and excluded from evaluation until completed.
 
@@ -202,6 +250,27 @@ Saving custom fixtures in browser storage means:
 This page is a purpose-built relevance UI inside the app.
 
 OpenSearch Dashboards is useful for cluster inspection and exploratory analysis, but the relevance page is focused on a fixed benchmark workflow with custom fixture management.
+
+### Why do I need project ids in a custom fixture?
+
+Because the evaluator needs a concrete answer key.
+
+It cannot score a query from only the text label.
+It needs to know exactly which indexed documents should count as good results.
+
+In this project, that means the fixture points at project ids.
+
+### Do I need a lot of judged documents?
+
+No.
+
+For a small custom fixture, even this is useful:
+
+- 1 best-match document with rating `3`
+- 1 or 2 other decent matches with ratings `2` or `1`
+
+The page is not expecting a huge research dataset.
+It is meant to help you test important search cases in a lightweight way.
 
 ## Technical Overview
 
