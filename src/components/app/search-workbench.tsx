@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   useEffect,
+  useRef,
   useState,
   useTransition,
   type ChangeEvent,
@@ -111,6 +112,10 @@ const sortOptions: Array<{ value: SortOption; label: string }> = [
   { value: "completion_desc", label: "Latest completion" },
 ];
 
+function buildRequestKey(request: SearchRequest) {
+  return JSON.stringify(request);
+}
+
 function extractErrorMessage(payload: unknown) {
   if (payload && typeof payload === "object" && "error" in payload) {
     const errorValue = payload.error;
@@ -216,7 +221,11 @@ export function SearchWorkbench({
     useState<CapitalProjectDocument | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [hasHydrated, setHasHydrated] = useState(false);
+  const [isAutoSearchEnabled, setIsAutoSearchEnabled] = useState(true);
   const [isPending, startTransition] = useTransition();
+  const searchAbortControllerRef = useRef<AbortController | null>(null);
+  const lastExecutedRequestKeyRef = useRef(buildRequestKey(initialRequest));
 
   async function loadClusterStatus() {
     const apiResponse = await fetch("/api/admin/cluster", {
@@ -226,24 +235,49 @@ export function SearchWorkbench({
     setClusterStatus(payload);
   }
 
-  async function runSearch(nextRequest: SearchRequest) {
+  async function runSearch(
+    nextRequest: SearchRequest,
+    options?: {
+      syncRequest?: boolean;
+    },
+  ) {
     setErrorMessage(null);
+    searchAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortControllerRef.current = controller;
 
-    const apiResponse = await fetch("/api/search", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(nextRequest),
-    });
-    const payload = await apiResponse.json();
-
-    if (!apiResponse.ok) {
-      throw new Error(extractErrorMessage(payload));
+    if (options?.syncRequest ?? true) {
+      setRequest(nextRequest);
     }
 
-    setResponse(payload as SearchResponse);
-    setRequest(nextRequest);
+    try {
+      const apiResponse = await fetch("/api/search", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(nextRequest),
+        signal: controller.signal,
+      });
+      const payload = await apiResponse.json();
+
+      if (!apiResponse.ok) {
+        throw new Error(extractErrorMessage(payload));
+      }
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      setResponse(payload as SearchResponse);
+      lastExecutedRequestKeyRef.current = buildRequestKey(nextRequest);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+
+      throw error;
+    }
   }
 
   async function loadProject(projectId: string) {
@@ -309,11 +343,17 @@ export function SearchWorkbench({
         setClusterStatus(clusterPayload);
         setResponse(searchPayload);
         setRequest(initialRequest);
+        lastExecutedRequestKeyRef.current = buildRequestKey(initialRequest);
+        setHasHydrated(true);
       } catch (error) {
         if (!cancelled) {
           setErrorMessage(
             error instanceof Error ? error.message : "Initial load failed.",
           );
+        }
+      } finally {
+        if (!cancelled) {
+          setHasHydrated(true);
         }
       }
     }
@@ -322,8 +362,35 @@ export function SearchWorkbench({
 
     return () => {
       cancelled = true;
+      searchAbortControllerRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasHydrated || !isAutoSearchEnabled) {
+      return;
+    }
+
+    const requestKey = buildRequestKey(request);
+
+    if (requestKey === lastExecutedRequestKeyRef.current) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      startTransition(() => {
+        void runSearch(request, { syncRequest: false }).catch((error) => {
+          setErrorMessage(
+            error instanceof Error ? error.message : "Request failed.",
+          );
+        });
+      });
+    }, request.query.trim().length > 0 ? 260 : 120);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [hasHydrated, isAutoSearchEnabled, request, startTransition]);
 
   const totalPages = response
     ? Math.max(1, Math.ceil(response.total / request.pageSize))
@@ -521,6 +588,34 @@ export function SearchWorkbench({
                     box is empty.
                   </span>
                 ) : null}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border/70 bg-background/70 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <Switch
+                    checked={isAutoSearchEnabled}
+                    onCheckedChange={setIsAutoSearchEnabled}
+                  />
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">
+                      Search as you type
+                    </p>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      {isAutoSearchEnabled
+                        ? "Live mode debounces query, sort, facet, and pagination changes into one running search flow."
+                        : "Manual mode leaves the current result set untouched until you press Run search."}
+                    </p>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      Prefix-aware lexical matching is wired for the latest index
+                      mapping and gets strongest after a reindex.
+                    </p>
+                  </div>
+                </div>
+                <Badge
+                  variant={isAutoSearchEnabled ? "secondary" : "outline"}
+                  className="rounded-full"
+                >
+                  {isAutoSearchEnabled ? "Live search" : "Manual search"}
+                </Badge>
               </div>
             </CardHeader>
           </Card>
