@@ -7,7 +7,7 @@ A local research workbench for learning OpenSearch against a real public dataset
 - Host Ollama embeddings with `qwen3-embedding:0.6b`
 - NYC Parks Capital Project Tracker data from NYC Open Data
 
-The app is intentionally research-first rather than product-polished. It exposes lexical, vector, and hybrid search, advanced filters, aggregations, raw DSL inspection, and reindex controls from one dashboard.
+The app is intentionally research-first rather than product-polished. It exposes lexical, vector, and hybrid search, advanced filters, aggregations, raw DSL inspection, reindex controls, and a dedicated analytics view from one dashboard.
 
 ## What is included
 
@@ -16,8 +16,9 @@ The app is intentionally research-first rather than product-polished. It exposes
 - Ingest pipeline for normalization and ingest timestamps
 - Hybrid search pipeline using the OpenSearch normalization processor
 - Dataset normalization for phase, funding, budget ranges, boroughs, dates, and geo coordinates
-- `/api/search`, `/api/projects/[id]`, `/api/admin/reindex`, and `/api/admin/cluster`
-- A `shadcn/ui` dashboard with filters, result list, debug tabs, and a detail drawer
+- `/api/search`, `/api/projects/[id]`, `/api/admin/reindex`, `/api/admin/cluster`, and `/api/analytics`
+- A `shadcn/ui` search workbench with filters, result list, debug tabs, and a detail drawer
+- A dedicated `/analytics` page with OpenSearch aggregation cards, timeline charts, and raw aggregation traces
 
 ## Quick start
 
@@ -90,7 +91,8 @@ This will:
 
 ### Open the app
 
-- App: `http://localhost:3000`
+- Search workbench: `http://localhost:3000`
+- Analytics page: `http://localhost:3000/analytics`
 - OpenSearch: `https://localhost:9200`
 - Dashboards: `http://localhost:5601`
 
