@@ -54,6 +54,20 @@ const KNOWN_FUNDING_SOURCES = [
 const SOURCE_URL =
   "https://data.cityofnewyork.us/Recreation/Capital-Project-Tracker/4hcv-tc5r";
 const SOURCE_DATASET = "NYC Parks Capital Project Tracker";
+const DEFAULT_DESCRIPTION = "No project summary provided.";
+const DESCRIPTION_FIELD_CANDIDATES = [
+  "summary",
+  "description",
+  "detailed_description",
+  "detaileddescription",
+  "project_description",
+  "projectdescription",
+  "scope_of_work",
+  "scopeofwork",
+  "work_description",
+  "workdescription",
+  "details",
+] as const;
 
 function cleanText(value?: string | null) {
   const trimmed = value?.trim();
@@ -73,6 +87,25 @@ function parseNumber(value?: string | null) {
 function parseDate(value?: string | null) {
   const cleaned = cleanText(value);
   return cleaned ? cleaned.slice(0, 10) : null;
+}
+
+function getLongestTextCandidate(
+  row: Record<string, unknown>,
+  fields: readonly string[],
+) {
+  let longestValue: string | null = null;
+
+  for (const field of fields) {
+    const value = cleanText(
+      typeof row[field] === "string" ? (row[field] as string) : null,
+    );
+
+    if (value && (!longestValue || value.length > longestValue.length)) {
+      longestValue = value;
+    }
+  }
+
+  return longestValue;
 }
 
 function dedupe(values: string[]) {
@@ -201,8 +234,20 @@ function buildForecastCompletion(row: NYCParksCapitalProjectRow, phase: string) 
   return upcomingMilestones.find(Boolean) ?? null;
 }
 
+function buildDescription(row: NYCParksCapitalProjectRow) {
+  return (
+    getLongestTextCandidate(
+      row as Record<string, unknown>,
+      DESCRIPTION_FIELD_CANDIDATES,
+    ) ?? DEFAULT_DESCRIPTION
+  );
+}
+
 function buildSearchText(
-  project: Omit<CapitalProjectDocument, "search_text" | "project_suggest">,
+  project: Omit<
+    CapitalProjectDocument,
+    "embedding_text" | "search_text" | "project_suggest"
+  >,
 ) {
   return dedupe([
     project.title,
@@ -223,8 +268,25 @@ function buildSearchText(
     .trim();
 }
 
+function buildEmbeddingText(
+  project: Pick<CapitalProjectDocument, "title" | "description">,
+) {
+  const embeddingSegments = [
+    project.title,
+    project.description === DEFAULT_DESCRIPTION ? "" : project.description,
+  ];
+
+  return dedupe(embeddingSegments)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function buildSuggestionInputs(
-  project: Omit<CapitalProjectDocument, "search_text" | "project_suggest">,
+  project: Omit<
+    CapitalProjectDocument,
+    "embedding_text" | "search_text" | "project_suggest"
+  >,
 ) {
   const suggestions = dedupe([
     project.title,
@@ -244,6 +306,7 @@ export function normalizeCapitalProject(
   row: NYCParksCapitalProjectRow,
 ): CapitalProjectDocument {
   const phase = cleanText(row.currentphase)?.toLowerCase() ?? "unknown";
+  const description = buildDescription(row);
   const budget = parseBudgetRange(cleanText(row.totalfunding));
   const latitude = parseNumber(row.latitude);
   const longitude = parseNumber(row.longitude);
@@ -255,12 +318,12 @@ export function normalizeCapitalProject(
   );
   const baseDocument: Omit<
     CapitalProjectDocument,
-    "search_text" | "project_suggest"
+    "embedding_text" | "search_text" | "project_suggest"
   > = {
     project_id: row.trackerid,
     fms_id: cleanText(row.fmsid),
     title: cleanText(row.title) ?? `Capital Project ${row.trackerid}`,
-    description: cleanText(row.summary) ?? "No project summary provided.",
+    description,
     agency: "nyc parks",
     phase,
     status: phase,
@@ -317,6 +380,7 @@ export function normalizeCapitalProject(
 
   return {
     ...baseDocument,
+    embedding_text: buildEmbeddingText(baseDocument),
     search_text: buildSearchText(baseDocument),
     project_suggest: buildSuggestionInputs(baseDocument),
   };

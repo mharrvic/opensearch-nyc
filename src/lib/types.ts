@@ -123,6 +123,7 @@ export type CapitalProjectDocument = {
   fms_id: string | null;
   title: string;
   description: string;
+  embedding_text: string;
   agency: string;
   phase: string;
   status: string;
@@ -172,6 +173,7 @@ export type FacetBucket = {
 export type SearchHit = {
   id: string;
   score: number | null;
+  normalizedScore: number | null;
   title: string;
   description: string;
   phase: string;

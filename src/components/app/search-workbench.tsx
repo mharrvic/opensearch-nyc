@@ -1332,7 +1332,7 @@ export function SearchWorkbench({
                             <TableHead>Borough</TableHead>
                             <TableHead>Funding</TableHead>
                             <TableHead>Forecast</TableHead>
-                            <TableHead>Score</TableHead>
+                            <TableHead>Score (0-1)</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1403,7 +1403,14 @@ export function SearchWorkbench({
                                   {formatShortDate(hit.forecastCompletion)}
                                 </TableCell>
                                 <TableCell className="align-top font-mono text-xs text-muted-foreground">
-                                  {hit.score ? hit.score.toFixed(3) : "n/a"}
+                                  {typeof hit.normalizedScore === "number"
+                                    ? hit.normalizedScore.toFixed(2)
+                                    : "n/a"}
+                                  {typeof hit.score === "number" ? (
+                                    <div className="mt-1 text-[10px] text-muted-foreground/75">
+                                      raw {hit.score.toFixed(3)}
+                                    </div>
+                                  ) : null}
                                 </TableCell>
                               </TableRow>
                             );
@@ -1663,6 +1670,7 @@ export function SearchWorkbench({
                       location: selectedProject.location,
                       tags: selectedProject.tags,
                       source_url: selectedProject.source_url,
+                      embedding_text: selectedProject.embedding_text,
                       search_text: selectedProject.search_text,
                       project_suggest: selectedProject.project_suggest,
                     }}

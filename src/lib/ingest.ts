@@ -50,7 +50,7 @@ export async function runReindex(limit?: number): Promise<ReindexReport> {
   }
 
   const embeddingDimensions = await probeEmbeddingDimension(
-    normalizedProjects[0].search_text,
+    normalizedProjects[0].embedding_text,
   );
   const indexName = buildVersionedIndexName();
 
@@ -58,7 +58,9 @@ export async function runReindex(limit?: number): Promise<ReindexReport> {
 
   let totalIndexed = 0;
   for (const batch of chunk(normalizedProjects, 24)) {
-    const embeddings = await embedTexts(batch.map((project) => project.search_text));
+    const embeddings = await embedTexts(
+      batch.map((project) => project.embedding_text),
+    );
     const documents: CapitalProjectDocument[] = batch.map((project, index) => ({
       ...project,
       project_embedding: embeddings[index],

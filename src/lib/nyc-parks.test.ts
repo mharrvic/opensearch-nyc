@@ -83,6 +83,31 @@ describe("nyc parks normalization", () => {
     expect(document.boroughs).toEqual(["Manhattan"]);
     expect(document.forecast_completion).toBe("2026-10-01");
     expect(document.has_coordinates).toBe(true);
+    expect(document.embedding_text).toContain(
+      "A. Philip Randolph Square Reconstruction",
+    );
     expect(document.search_text).toContain("A. Philip Randolph Square Reconstruction");
+  });
+
+  it("prefers the longest available description for embedding context", () => {
+    const row: NYCParksCapitalProjectRow & { detaileddescription: string } = {
+      trackerid: "1001",
+      title: "Astoria Park Seawall Reconstruction",
+      summary: "Short summary.",
+      detaileddescription:
+        "This project reconstructs the seawall, adjacent paths, and shoreline infrastructure with a wider resiliency scope than the short summary.",
+      currentphase: "construction",
+      lastupdated: "2026-03-13T00:00:00.000",
+    };
+
+    const document = normalizeCapitalProject(row);
+
+    expect(document.description).toBe(row.detaileddescription);
+    expect(document.embedding_text).toBe(
+      [
+        "Astoria Park Seawall Reconstruction",
+        row.detaileddescription,
+      ].join("\n\n"),
+    );
   });
 });

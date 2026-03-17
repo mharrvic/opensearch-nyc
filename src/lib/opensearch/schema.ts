@@ -4,6 +4,9 @@ import { format } from "date-fns";
 import { getServerEnv } from "@/lib/env";
 import { isIndexMissingError } from "@/lib/opensearch/client";
 
+export const HYBRID_RRF_RANK_CONSTANT = 40;
+export const HYBRID_RRF_WEIGHTS = [0.55, 0.45] as const;
+
 export function buildVersionedIndexName(now = new Date()) {
   return `capital-projects-v${format(now, "yyyyMMddHHmmss")}`;
 }
@@ -147,6 +150,10 @@ function buildIndexBody(embeddingDimensions: number) {
         tags: { type: "keyword", normalizer: "facet_normalizer" },
         source_url: { type: "keyword" },
         source_dataset: { type: "keyword" },
+        embedding_text: {
+          type: "text",
+          index: false,
+        },
         search_text: {
           type: "text",
           analyzer: "english",
@@ -257,9 +264,9 @@ export async function ensurePipelines(client: Client) {
           "score-ranker-processor": {
             combination: {
               technique: "rrf",
-              rank_constant: 40,
+              rank_constant: HYBRID_RRF_RANK_CONSTANT,
               parameters: {
-                weights: [0.55, 0.45],
+                weights: HYBRID_RRF_WEIGHTS,
               },
             },
           },

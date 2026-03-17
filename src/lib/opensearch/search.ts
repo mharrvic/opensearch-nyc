@@ -10,7 +10,11 @@ import {
   getSearchConfig,
   resolveSearchConfigId,
 } from "@/lib/opensearch/search-config";
-import { getAliasIndices } from "@/lib/opensearch/schema";
+import {
+  HYBRID_RRF_RANK_CONSTANT,
+  HYBRID_RRF_WEIGHTS,
+  getAliasIndices,
+} from "@/lib/opensearch/schema";
 import type {
   CapitalProjectDocument,
   FacetBucket,
@@ -284,7 +288,7 @@ function buildLexicalClause(query: string) {
   };
 }
 
-function buildSort(sort: SortOption) {
+function buildSort(sort: SortOption, mode: SearchMode) {
   switch (sort) {
     case "updated_desc":
       return [{ last_updated: "desc" }, { project_id: "asc" }];
@@ -300,7 +304,11 @@ function buildSort(sort: SortOption) {
       return [{ forecast_completion: "desc" }, { project_id: "asc" }];
     case "relevance":
     default:
-      return [{ _score: "desc" }, { project_id: "asc" }];
+      // Hybrid and vector queries in OpenSearch reject `_score` when it is
+      // combined with an additional explicit sort clause.
+      return mode === "lexical"
+        ? [{ _score: "desc" }, { project_id: "asc" }]
+        : [{ _score: "desc" }];
   }
 }
 
@@ -358,6 +366,7 @@ export function mapSearchHit(hit: RawSearchHit): SearchHit {
   return {
     id: hit._id,
     score: Number.isFinite(numericScore) ? numericScore : null,
+    normalizedScore: null,
     title: source.title,
     description: source.description,
     phase: source.phase,
@@ -379,6 +388,43 @@ export function mapSearchHit(hit: RawSearchHit): SearchHit {
     highlights: hit.highlight ?? {},
     sortValues: hit.sort,
   };
+}
+
+const hybridRrfMaxScore = HYBRID_RRF_WEIGHTS.reduce(
+  (sum, weight) => sum + weight / (HYBRID_RRF_RANK_CONSTANT + 1),
+  0,
+);
+
+function clamp01(value: number) {
+  return Math.min(Math.max(value, 0), 1);
+}
+
+function toReadableScore(score: number, searchConfig: SearchConfigId) {
+  switch (searchConfig) {
+    case "hybrid":
+      return clamp01(score);
+    case "hybrid_rrf":
+      return hybridRrfMaxScore > 0 ? clamp01(score / hybridRrfMaxScore) : null;
+    case "vector":
+      return score <= 1 ? clamp01(score) : clamp01(score / (score + 1));
+    case "lexical":
+    default:
+      // BM25 is unbounded, so use a bounded squash for UI readability.
+      return clamp01(score / (score + 1));
+  }
+}
+
+export function normalizeSearchHits(
+  hits: SearchHit[],
+  searchConfig: SearchConfigId,
+): SearchHit[] {
+  return hits.map((hit) => ({
+    ...hit,
+    normalizedScore:
+      typeof hit.score === "number" && Number.isFinite(hit.score)
+        ? toReadableScore(hit.score, searchConfig)
+        : null,
+  }));
 }
 
 function getTotalHits(responseBody: SearchResponseBody) {
@@ -563,7 +609,7 @@ export function buildSearchRequestBody(
         }),
     track_total_hits: true,
     query,
-    sort: buildSort(input.sort),
+    sort: buildSort(input.sort, effectiveMode),
     ...(options.includeAggregations ?? true
       ? {
           aggs: buildAggregations(input.filters),
@@ -630,7 +676,10 @@ export async function executeSearch(input: SearchRequest): Promise<SearchRespons
         : {}),
     } as never);
     const responseBody = response.body as SearchResponseBody;
-    const hits = (responseBody.hits?.hits ?? []).map(mapSearchHit);
+    const hits = normalizeSearchHits(
+      (responseBody.hits?.hits ?? []).map(mapSearchHit),
+      searchConfig,
+    );
     const aggregations = responseBody.aggregations as Record<string, unknown> | undefined;
 
     return {
@@ -784,7 +833,7 @@ export async function executeSearchExport(
   }
 
   return {
-    hits,
+    hits: normalizeSearchHits(hits, resolveSearchConfigId(input)),
     total,
     exportedCount: hits.length,
     latencyMs,
